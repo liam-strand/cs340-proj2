@@ -39,14 +39,12 @@ class SimulationStats:
         print("PACKETS_SENT=%d" % self.packets_sent)
         print("UDP_BYTES_SENT=%d" % self.bytes_sent)
         print(
-            "ETH_BYTES_SENT=%d"
-            % (self.bytes_sent + (18 + 20 + 8) * self.packets_sent)
+            "ETH_BYTES_SENT=%d" % (self.bytes_sent + (18 + 20 + 8) * self.packets_sent)
         )
         print("PACKETS_RECV=%d" % self.packets_recv)
         print("UDP_BYTES_RECV=%d" % self.bytes_recv)
         print(
-            "ETH_BYTES_RECV=%d"
-            % (self.bytes_recv + (18 + 20 + 8) * self.packets_recv)
+            "ETH_BYTES_RECV=%d" % (self.bytes_recv + (18 + 20 + 8) * self.packets_recv)
         )
 
 
@@ -94,15 +92,11 @@ class LossyUDP(socket):
                 for bit_to_flip in range(len(message) * 8):
                     # probability of corrupting the packet in at least one bit
                     # is ~ sim.corruption_rate
-                    if random.random() < sim.corruption_rate / (
-                        len(message) * 8
-                    ):
+                    if random.random() < sim.corruption_rate / (len(message) * 8):
                         bits_flipped += 1
                         # corrupt the packet
                         byte_to_be_flipped = message[int(bit_to_flip / 8)]
-                        flipped_byte = byte_to_be_flipped ^ (
-                            1 << (bit_to_flip % 8)
-                        )
+                        flipped_byte = byte_to_be_flipped ^ (1 << (bit_to_flip % 8))
                         # bytes type is not mutable, but bytearray is:
                         msg_array = bytearray(message)
                         msg_array[int(bit_to_flip / 8)] = flipped_byte
@@ -112,9 +106,7 @@ class LossyUDP(socket):
                             % bit_to_flip
                         )
                 if bits_flipped > 0:
-                    print(
-                        "total of %d bits flipped in the packet" % bits_flipped
-                    )
+                    print("total of %d bits flipped in the packet" % bits_flipped)
             # send message after a random delay.  The randomness will reorder
             # packets
             Timer(
