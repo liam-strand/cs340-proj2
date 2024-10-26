@@ -10,11 +10,13 @@ from struct import Struct
 
 from threading import Thread
 from time import sleep, time
-from hashlib import md5
+from hashlib import blake2s, md5
+from collections import deque
+from itertools import islice
 
 CHUNK_SIZE = 1024
 ACK_TIMEOUT = 0.25
-SLEEP_INTERVAL = 0.01
+SLEEP_INTERVAL = 0.001
 NO_HASH = b"\x00" * 16
 
 
@@ -26,53 +28,70 @@ class Streamer:
         self.socket.bind((src_ip, src_port))
         self.dst_ip = dst_ip
         self.dst_port = dst_port
-        self.buffer = {}
-        self.expecting = 0
-        self.curr = 0
+        self.dst = (self.dst_ip, self.dst_port)
+        self.in_buffer = deque()
+        self.out_buffer = deque()
+        self.nextseqnum = 1
+        self.nextrecseqnum = 1
+        self.base = 1
+        self.sendpkt = Header(b"", 0, ack=True).pack()
         self.closed = False
         self.listener = Thread(target=self.listener)
         self.listener.start()
+        self.acknum = 0
         self.ack = False
         self.finack = False
+        self.start = time()
+        self.next_new_seq_num = 1
 
     def send(self, data_bytes: bytes) -> None:
         """Note that data_bytes can be larger than one packet."""
 
-        num_chunks = ceil(len(data_bytes) / CHUNK_SIZE)
+        num_packets = ceil(len(data_bytes) / CHUNK_SIZE)
 
-        for i in range(num_chunks):
+        def make_packet_at_i(i: int) -> bytes:
             start = i * CHUNK_SIZE
             end = min(start + CHUNK_SIZE, len(data_bytes))
 
             packet_data = data_bytes[start:end]
-            packet_header = Header(packet_data, self.curr).pack()
-            wire_data = packet_header + packet_data
+            packet_header = Header(packet_data, self.next_new_seq_num).pack()
+            self.next_new_seq_num += 1
+            return packet_header + packet_data
 
-            self.ack = False
+        self.out_buffer.extend(map(make_packet_at_i, range(num_packets)))
 
-            while not self.ack:
-                self.socket.sendto(wire_data, (self.dst_ip, self.dst_port))
+        while len(self.out_buffer) > 0:
 
-                start = time()
-                while (not self.ack) and (time() - start < ACK_TIMEOUT):
-                    sleep(SLEEP_INTERVAL)
+            if time() - self.start > ACK_TIMEOUT:
+                self.start = time()
+                for pkt in islice(self.out_buffer, self.nextseqnum - self.base):
+                    self.socket.sendto(pkt, self.dst)
+            elif self.ack:
+                for _ in range(self.acknum - self.base + 1):
+                    self.out_buffer.popleft()
 
-            self.ack = False
-
-            self.curr += 1
+                self.base = self.acknum + 1
+                self.ack = False
+                self.start = time()
+            elif self.nextseqnum - self.base < len(self.out_buffer):
+                self.socket.sendto(self.out_buffer[self.nextseqnum - self.base], self.dst)
+                if self.base == self.nextseqnum:
+                    self.start = time()
+                self.nextseqnum += 1
+            else:
+                sleep(SLEEP_INTERVAL)
 
     def recv(self) -> bytes:
         """Blocks (waits) if no data is ready to be read from the connection"""
 
         data = None
 
-        while not data:
-            response = self.buffer.pop(self.expecting, None)
-            if response:
-                _header, data = response
-
-        self.expecting += 1
-        return data
+        while True:
+            try:
+                header, data = self.in_buffer.popleft()
+                return data
+            except IndexError:
+                sleep(SLEEP_INTERVAL)
 
     def listener(self):
         while not self.closed:
@@ -92,14 +111,20 @@ class Streamer:
                     if recreated_header.hash == header.hash:
                         if header.ack:
                             self.ack = True
+                            self.acknum = header.seq_num
                             if header.fin:
                                 self.finack = True
+                        elif header.fin:
+                            self.socket.sendto(Header(b"", header.seq_num, ack=True, fin=True).pack(), self.dst)
                         else:
-                            self.buffer[header.seq_num] = header, new_data
-                            self.socket.sendto(
-                                Header(b"", self.curr, ack=True, fin=header.fin).pack(),
-                                (self.dst_ip, self.dst_port),
-                            )
+                            if header.seq_num == self.nextrecseqnum:
+                                self.sendpkt = Header(b"", self.nextrecseqnum, ack=True, fin=header.fin).pack()
+                                self.socket.sendto(self.sendpkt, self.dst)
+                                self.nextrecseqnum += 1
+                                self.in_buffer.append((header, new_data))
+                            else:
+                                self.socket.sendto(self.sendpkt, self.dst)
+
 
             except Exception as e:
                 print("listener died!")
@@ -108,13 +133,15 @@ class Streamer:
     def close(self) -> None:
         """Cleans up. It should block (wait) until the Streamer is done with
         all the necessary ACKs and retransmissions"""
-        # your code goes here, especially after you add ACKs and
-        # retransmissions.
+        print("closing!")
+        while self.base != self.nextseqnum:
+            sleep(SLEEP_INTERVAL)
+
         self.finack = False
 
         while not self.finack:
             self.socket.sendto(
-                Header(b"", self.curr, fin=True).pack(), (self.dst_ip, self.dst_port)
+                Header(b"", self.nextseqnum, fin=True).pack(), self.dst
             )
 
             start = time()
@@ -129,7 +156,7 @@ class Streamer:
 
 
 class Header:
-    PACKER = Struct("!L??QQ")
+    PACKER = Struct("!L??QQxx")
 
     def __init__(
         self,
@@ -182,3 +209,5 @@ def quads_to_bytes(high_order: int, low_order: int) -> bytes:
     high_bytes = high_order.to_bytes(8, byteorder="big")
     low_bytes = low_order.to_bytes(8, byteorder="big")
     return high_bytes + low_bytes
+
+
