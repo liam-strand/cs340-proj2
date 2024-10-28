@@ -1,3 +1,9 @@
+"""streamer.py
+
+October 2024
+Liam Strand
+"""
+
 # do not import anything else from loss_socket besides LossyUDP
 from lossy_socket import LossyUDP
 
@@ -61,17 +67,10 @@ class Streamer:
             self.next_new_seq_num += 1
             return packet_header + packet_data
 
-        # self.bfl.acquire()
-        # while len(self.out_buffer) > 25:
-        #     self.bfl.release()
-        #     sleep(SLEEP_INTERVAL)
-        #     self.bfl.acquire()
         with self.bfl:
             self.out_buffer.extend(map(make_packet_at_i, range(num_packets)))
-        # self.bfl.release()
 
         while self.nextseqnum - self.base < len(self.out_buffer):
-            # print("transmitting")
             with self.bfl:
                 self.socket.sendto(
                     self.out_buffer[self.nextseqnum - self.base], self.dst
@@ -114,7 +113,6 @@ class Streamer:
     def th_listener(self):
         while not self.closed:
             try:
-                # print("hiii")
                 data, _addr = self.socket.recvfrom()
                 if data:
                     header = Header.unpack_from(data)
@@ -123,21 +121,17 @@ class Streamer:
                     recreated_header = Header(
                         new_data, header.seq_num, ack=header.ack, fin=header.fin
                     )
-                    # print(f"got seq={header.seq_num} ack={header.ack}")
                     if recreated_header.hash == header.hash:
-                        # print(f"got {header.seq_num} with base {self.base}")
                         if header.ack and header.seq_num >= self.base:
                             with self.bfl:
                                 if header.fin:
                                     self.finack = True
                                 else:
-                                    # print(f"processing new ACK for {header.seq_num}")
                                     for _ in range((header.seq_num - self.base) + 1):
                                         self.out_buffer.popleft()
                                 self.base = header.seq_num + 1
                                 self.timeout_start = time()
                         elif not header.ack:
-                            # print(f"got new packet seq={header.seq_num}")
                             with self.bfl:
                                 if header.seq_num == self.nextrecseqnum:
                                     # print("    want it")
@@ -147,15 +141,11 @@ class Streamer:
                                         ack=True,
                                         fin=header.fin,
                                     ).pack()
-                                    # print(f"ACKing {self.nextrecseqnum}")
                                     self.socket.sendto(self.sendpkt, self.dst)
                                     self.nextrecseqnum += 1
                                     self.in_buffer.append((header, new_data))
                                 else:
-                                    # print("    dant it")
-                                    # print(f"ACKing {self.nextrecseqnum - 1}")
                                     self.socket.sendto(self.sendpkt, self.dst)
-                                    # sleep(SLEEP_INTERVAL)
 
             except Exception as e:
                 print("listener died!")
@@ -164,15 +154,12 @@ class Streamer:
     def close(self) -> None:
         """Cleans up. It should block (wait) until the Streamer is done with
         all the necessary ACKs and retransmissions"""
-        # print("closing!")
         while self.base != self.nextseqnum:
-            # print("waiting for all transmissions to finish")
             sleep(self.SLEEP_INTERVAL)
 
         self.finack = False
 
         while not self.finack:
-            # print("waiting for finack")
             with self.bfl:
                 self.socket.sendto(
                     Header(b"", self.nextseqnum, fin=True).pack(), self.dst
